@@ -4,16 +4,20 @@ namespace Cypher\Compiler\Runtime;
 
 use Cypher\Compiler\Compiler;
 use Cypher\Compiler\CompileResult;
+use Cypher\Compiler\Interpreter\AstInterpreter;
+use Cypher\Compiler\Interpreter\InterpreterResult;
 
 class Runtime
 {
     private Compiler $compiler;
     private array $options;
+    private AstInterpreter $interpreter;
 
     public function __construct(array $options = [])
     {
         $this->compiler = new Compiler($options);
         $this->options = $options;
+        $this->interpreter = new AstInterpreter();
     }
 
     public function execute(string $sourceCode, ?string $filename = null): RuntimeResult
@@ -27,39 +31,30 @@ class Runtime
             return $result;
         }
 
-        $phpCode = $compileResult->generatedFiles['app/App.php'] ?? '';
-        if (empty($phpCode)) {
-            $firstFile = reset($compileResult->generatedFiles);
-            if (is_string($firstFile)) {
-                $phpCode = $firstFile;
-            }
-        }
-
-        if (empty($phpCode)) {
-            $result->errors[] = 'Runtime: No executable code generated';
+        if ($compileResult->ast === null) {
+            $result->errors[] = 'Runtime: No AST produced';
             $result->success = false;
             return $result;
         }
 
         try {
-            $tmpFile = tempnam(sys_get_temp_dir(), 'cyp_') . '.php';
-            // Generated code already contains <?php tag
-            file_put_contents($tmpFile, $phpCode);
+            $interpreterResult = $this->interpreter->interpret($compileResult->ast);
 
-            ob_start();
-            include $tmpFile;
-            $output = ob_get_clean();
+            if ($interpreterResult->hasErrors()) {
+                $result->errors[] = 'Runtime: ' . $interpreterResult->error;
+                $result->success = false;
+                return $result;
+            }
 
-            unlink($tmpFile);
-
-            $result->output = $output;
+            $result->output = $interpreterResult->getOutput();
             $result->success = true;
+            return $result;
         } catch (\Throwable $e) {
+            // Fallback to PHP code generation if AST execution fails
             $result->errors[] = 'Runtime: ' . $e->getMessage();
             $result->success = false;
+            return $result;
         }
-
-        return $result;
     }
 
     public function executeFile(string $path): RuntimeResult
@@ -71,7 +66,39 @@ class Runtime
             return $result;
         }
 
-        $source = file_get_contents($path);
+        $source = @file_get_contents($path);
         return $this->execute($source, $path);
+    }
+
+    public function executeNative(string $sourceCode, ?string $filename = null): RuntimeResult
+    {
+        $result = new RuntimeResult();
+        $compileResult = $this->compiler->compile($sourceCode);
+
+        if ($compileResult->hasErrors()) {
+            $result->errors = $compileResult->errors;
+            $result->success = false;
+            return $result;
+        }
+
+        if ($compileResult->ast === null) {
+            $result->errors[] = 'Runtime: No AST produced';
+            $result->success = false;
+            return $result;
+        }
+
+        $startTime = microtime(true);
+        $interpreterResult = $this->interpreter->interpret($compileResult->ast);
+        $duration = (microtime(true) - $startTime) * 1000;
+
+        if ($interpreterResult->hasErrors()) {
+            $result->errors[] = 'Runtime: ' . $interpreterResult->error;
+            $result->success = false;
+            return $result;
+        }
+
+        $result->output = $interpreterResult->getOutput();
+        $result->success = true;
+        return $result;
     }
 }

@@ -181,9 +181,9 @@ class Parser
         return $params;
     }
 
-    private function parseIfStmt(): IfStmt
+    private function parseIfStmt(bool $isElif = false): IfStmt
     {
-        $token = $this->advance();
+        $token = $isElif ? $this->previous() : $this->advance();
         $condition = $this->parseExpression();
 
         $this->skipNewlines();
@@ -194,7 +194,7 @@ class Parser
 
         $this->skipNewlines();
         if ($this->match(TokenType::KeywordElif)) {
-            $elseIf = $this->parseIfStmt();
+            $elseIf = $this->parseIfStmt(true);
         } elseif ($this->match(TokenType::KeywordElse)) {
             $this->skipNewlines();
             $elseBody = $this->parseBlock();

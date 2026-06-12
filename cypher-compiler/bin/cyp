@@ -167,42 +167,74 @@ switch ($command) {
     // ============================================================
 
     case 'run':
-        $project = loadProject($args[0] ?? null);
+        $target = $args[0] ?? 'app.cyp';
+        $isProject = file_exists($target) ? is_dir($target) || file_exists($target . '/cypher.json') : false;
 
-        writeln(format_info("Running CYP project..."));
-        writeln();
+        if ($isProject || is_dir($target)) {
+            $project = loadProject($target);
+            $manifest = $project->getManifest();
+            writeln("  Found " . count($manifest) . " .cyp file(s):");
+            foreach ($manifest as $entry) {
+                writeln("    📄 {$entry['path']}");
+            }
+            writeln();
 
-        $manifest = $project->getManifest();
-        writeln("  Found " . count($manifest) . " .cyp file(s):");
-        foreach ($manifest as $entry) {
-            writeln("    📄 {$entry['path']}");
-        }
-        writeln();
+            $root = $project->getRootPath();
+            $runtime = new Runtime();
 
-        $result = compileProject($project);
-        if ($result === null) exit(1);
-
-        $phpCode = $result->generatedFiles['app/App.php'] ?? '';
-        if (empty($phpCode)) {
-            // Find any executable PHP file
-            foreach ($result->generatedFiles as $path => $content) {
-                if (str_ends_with($path, '.php') && !str_contains($path, 'vendor/')) {
-                    $phpCode = $content;
-                    break;
+            foreach ($manifest as $entry) {
+                $source = file_get_contents($entry['absolute']);
+                $result = $runtime->executeNative($source, $entry['path']);
+                if ($result->hasErrors()) {
+                    writeln("  " . format_error($entry['path'] . ': ' . implode(', ', $result->errors)));
+                } else {
+                    $output = $result->getOutput();
+                    if (!empty(trim($output))) {
+                        writeln();
+                        writeln(format_info("Output from {$entry['path']}:"));
+                        writeln();
+                        writeln($output);
+                    }
                 }
             }
+            break;
         }
 
-        if (!empty($phpCode)) {
-            $tmpFile = sys_get_temp_dir() . '/cyp_run_' . uniqid() . '.php';
-            file_put_contents($tmpFile, $phpCode);
-            writeln();
-            writeln(format_info("Output:"));
-            writeln();
-            passthru("php \"{$tmpFile}\"");
-            unlink($tmpFile);
-        } else {
-            writeln(format_success("Compilation successful — no runtime output"));
+        # Run a single .cyp file directly
+        if (!file_exists($target)) {
+            error("File not found: {$target}");
+            exit(1);
+        }
+
+        writeln(format_info("Running: {$target}"));
+        writeln();
+
+        try {
+            $runtime = new Runtime();
+            $result = $runtime->executeNative(file_get_contents($target), $target);
+
+            if ($result->hasErrors()) {
+                writeln("  " . format_error(implode(', ', $result->errors)));
+                exit(1);
+            }
+
+            writeln($result->getOutput());
+        } catch (\Exception $e) {
+            # Fallback: compile and run via PHP
+            writeln(format_info("Native execution unavailable, using PHP fallback..."));
+            $result = compileProject(loadProject(getcwd()));
+            if ($result === null) exit(1);
+
+            $phpCode = $result->generatedFiles['app/App.php'] ?? '';
+            if (!empty($phpCode)) {
+                $tmpFile = sys_get_temp_dir() . '/cyp_run_' . uniqid() . '.php';
+                file_put_contents($tmpFile, $phpCode);
+                writeln();
+                writeln(format_info("Output:"));
+                writeln();
+                passthru("php \"{$tmpFile}\"");
+                unlink($tmpFile);
+            }
         }
         break;
 
