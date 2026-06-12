@@ -1,0 +1,147 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Cypher\Compiler\Compiler;
+use Cypher\Compiler\CompileResult;
+
+function writeln(string $line = ''): void
+{
+    echo $line . PHP_EOL;
+}
+
+function write(string $text): void
+{
+    echo $text;
+}
+
+function error(string $msg): void
+{
+    fwrite(STDERR, "Error: {$msg}" . PHP_EOL);
+}
+
+$version = '0.1.0';
+$command = $argv[1] ?? 'help';
+$args = array_slice($argv, 2);
+
+switch ($command) {
+    case 'new':
+        $name = $args[0] ?? 'my-app';
+        writeln("Creating new CYP project: {$name}");
+        $dir = getcwd() . DIRECTORY_SEPARATOR . $name;
+        if (!mkdir($dir, 0777, true) && !is_dir($dir)) {
+            error("Could not create directory: {$dir}");
+            exit(1);
+        }
+        file_put_contents("{$dir}/main.cyp", "say \"Hello from {$name}!\"\n");
+        file_put_contents("{$dir}/cyp.json", json_encode([
+            'name' => $name,
+            'version' => '0.1.0',
+            'compiler' => 'cypc',
+        ], JSON_PRETTY_PRINT));
+        writeln("Done! cd {$name} and run 'cypc build'");
+        break;
+
+    case 'build':
+    case 'compile':
+        $target = $args[0] ?? 'main.cyp';
+        if (!file_exists($target)) {
+            error("File not found: {$target}");
+            exit(1);
+        }
+
+        writeln("Compiling: {$target}");
+        writeln();
+
+        $compiler = new Compiler();
+        $result = $compiler->compileFile($target);
+
+        if ($result->hasErrors()) {
+            writeln("Compilation failed with errors:");
+            writeln();
+            foreach ($result->errors as $err) {
+                writeln("  ✗ {$err}");
+            }
+            exit(1);
+        }
+
+        $outputDir = $result->getOutputDir();
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
+            error("Could not create output directory: {$outputDir}");
+            exit(1);
+        }
+
+        $fileCount = 0;
+        foreach ($result->generatedFiles as $path => $content) {
+            if (str_starts_with($path, '_')) continue;
+            $fullPath = $outputDir . DIRECTORY_SEPARATOR . $path;
+            $dirName = dirname($fullPath);
+            if (!is_dir($dirName)) {
+                mkdir($dirName, 0777, true);
+            }
+            file_put_contents($fullPath, $content);
+            $fileCount++;
+        }
+
+        writeln("Build successful! Generated {$fileCount} files in '{$outputDir}/'");
+        break;
+
+    case 'run':
+        $target = $args[0] ?? 'main.cyp';
+        writeln("Running: {$target}");
+        writeln();
+
+        $compiler = new Compiler();
+        $result = $compiler->compileFile($target);
+
+        if ($result->hasErrors()) {
+            writeln("Errors:");
+            foreach ($result->errors as $err) {
+                writeln("  ✗ {$err}");
+            }
+            exit(1);
+        }
+
+        foreach ($result->generatedFiles as $path => $content) {
+            if ($path === 'app/App.php' || $path === 'app/app.php') {
+                $tmpFile = sys_get_temp_dir() . '/cyp_run_' . uniqid() . '.php';
+                file_put_contents($tmpFile, $content);
+                passthru("php \"{$tmpFile}\"");
+                unlink($tmpFile);
+            }
+        }
+        break;
+
+    case 'serve':
+        $port = $args[0] ?? '8080';
+        writeln("Starting development server on port {$port}...");
+        writeln("Press Ctrl+C to stop.");
+        passthru("php -S localhost:{$port} -t build/public");
+        break;
+
+    case 'test':
+        writeln("Running tests...");
+        passthru(__DIR__ . '/../vendor/bin/phpunit');
+        break;
+
+    case 'version':
+    case '--version':
+    case '-v':
+        writeln("CYP Compiler v{$version}");
+        break;
+
+    case 'help':
+    default:
+        writeln("CYP Programming Language Compiler v{$version}");
+        writeln();
+        writeln("Usage:");
+        writeln("  cypc new <name>       Create a new CYP project");
+        writeln("  cypc build [file]     Compile .cyp file (default: main.cyp)");
+        writeln("  cypc run [file]       Run a .cyp file");
+        writeln("  cypc serve [port]     Start development server");
+        writeln("  cypc test             Run tests");
+        writeln("  cypc version          Show version");
+        writeln();
+        break;
+}

@@ -1,0 +1,28 @@
+{
+    "name": "cypher-language",
+    "version": "0.1.0",
+    "compiler": "cypc",
+    "targets": {
+        "backend": {
+            "language": "PHP",
+            "framework": "Laravel 12"
+        },
+        "frontend": {
+            "framework": "React",
+            "language": "TypeScript",
+            "styling": "Tailwind CSS"
+        },
+        "database": {
+            "engine": "PostgreSQL",
+            "extensions": ["PGVector"]
+        }
+    },
+    "build": {
+        "output": "build",
+        "clean": true
+    },
+    "language": {
+        "extension": ".cyp",
+        "version": "0.1.0"
+    }
+}

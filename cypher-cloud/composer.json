@@ -1,0 +1,17 @@
+{
+    "name": "cyphercode/cypher-cloud",
+    "description": "Cypher Cloud Platform - Deployment, Managed Services, Agent Cloud, Monitoring",
+    "type": "library",
+    "license": "CYP-1.0",
+    "autoload": {
+        "psr-4": {
+            "Cypher\\Cloud\\": "src/"
+        }
+    },
+    "require": {
+        "php": ">=8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    }
+}

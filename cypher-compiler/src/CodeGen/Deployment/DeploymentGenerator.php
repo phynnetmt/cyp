@@ -1,0 +1,358 @@
+<?php
+
+namespace Cypher\Compiler\CodeGen\Deployment;
+
+use Cypher\Compiler\AST\ModuleNode;
+
+class DeploymentGenerator
+{
+    private array $generatedFiles = [];
+    private array $config;
+
+    public function __construct(array $config = [])
+    {
+        $this->config = $config;
+        $this->config['php_version'] ??= '8.3';
+        $this->config['node_version'] ??= '20';
+    }
+
+    public function generate(ModuleNode $module): array
+    {
+        $this->generatedFiles = [];
+
+        $this->generateDockerFiles();
+        $this->generateNginxConfig();
+        $this->generateCI_CD();
+        $this->generateEnvTemplates();
+
+        return $this->generatedFiles;
+    }
+
+    private function generateDockerFiles(): void
+    {
+        // Dockerfile for PHP backend
+        $this->generatedFiles['docker/Dockerfile'] = $this->dockerfile();
+
+        // Dockerfile for frontend
+        $this->generatedFiles['docker/frontend.Dockerfile'] = $this->frontendDockerfile();
+
+        // docker-compose.yml
+        $this->generatedFiles['docker-compose.yml'] = $this->dockerCompose();
+
+        // .dockerignore
+        $this->generatedFiles['.dockerignore'] = <<<'TEXT'
+/node_modules
+/vendor
+/storage
+/.env
+.git
+TEXT;
+    }
+
+    private function dockerfile(): string
+    {
+        $phpVersion = $this->config['php_version'];
+        return <<<DOCKERFILE
+FROM php:{$phpVersion}-fpm
+
+RUN apt-get update && apt-get install -y \\
+    git \\
+    curl \\
+    libpng-dev \\
+    libonig-dev \\
+    libxml2-dev \\
+    zip \\
+    unzip \\
+    libpq-dev \\
+    && docker-php-ext-install pdo_pgsql mbstring exif pcntl bcmath gd
+
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+WORKDIR /var/www
+
+COPY . .
+
+RUN composer install --no-dev --optimize-autoloader
+
+RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
+
+EXPOSE 9000
+
+CMD ["php-fpm"]
+DOCKERFILE;
+    }
+
+    private function frontendDockerfile(): string
+    {
+        $nodeVersion = $this->config['node_version'];
+        return <<<DOCKERFILE
+FROM node:{$nodeVersion}-alpine
+
+WORKDIR /app
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=0 /app/dist /usr/share/nginx/html
+COPY docker/nginx-frontend.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+DOCKERFILE;
+    }
+
+    private function dockerCompose(): string
+    {
+        return <<<'YAML'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: cyp-app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - .:/var/www
+    depends_on:
+      - db
+    networks:
+      - cyp-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: cyp-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+    networks:
+      - cyp-network
+
+  db:
+    image: postgres:16-alpine
+    container_name: cyp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-cyp_app}
+      POSTGRES_USER: ${DB_USERNAME:-cyp}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - cyp-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: cyp-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - .:/var/www
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - app
+    networks:
+      - cyp-network
+
+volumes:
+  pgdata:
+
+networks:
+  cyp-network:
+    driver: bridge
+YAML;
+    }
+
+    private function generateNginxConfig(): void
+    {
+        $this->generatedFiles['docker/nginx.conf'] = <<<'NGINX'
+server {
+    listen 80;
+    server_name localhost;
+    root /var/www/public;
+
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+    add_header X-XSS-Protection "1; mode=block";
+
+    index index.php;
+
+    charset utf-8;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass app:9000;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}
+NGINX;
+
+        $this->generatedFiles['docker/nginx-frontend.conf'] = <<<'NGINX'
+server {
+    listen 80;
+    server_name localhost;
+    root /usr/share/nginx/html;
+
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://nginx:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+NGINX;
+    }
+
+    private function generateCI_CD(): void
+    {
+        // GitHub Actions
+        $this->generatedFiles['.github/workflows/deploy.yml'] = <<<'YAML'
+name: Deploy CYP Application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: testing
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql
+      - run: composer install --no-interaction
+      - run: php artisan test
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run build
+
+  deploy:
+    needs: [backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Deployment trigger ready"
+YAML;
+
+        // .gitlab-ci.yml
+        $this->generatedFiles['.gitlab-ci.yml'] = <<<'YAML'
+stages:
+  - test
+  - build
+  - deploy
+
+backend-test:
+  stage: test
+  image: php:8.3-fpm
+  services:
+    - postgres:16
+  script:
+    - composer install --no-interaction
+    - php artisan test
+
+frontend-build:
+  stage: build
+  image: node:20
+  script:
+    - cd frontend && npm ci && npm run build
+
+deploy:
+  stage: deploy
+  script:
+    - echo "Deploying application..."
+  only:
+    - main
+YAML;
+    }
+
+    private function generateEnvTemplates(): void
+    {
+        $this->generatedFiles['.env.example'] = <<<'ENV'
+APP_NAME=CYP_Application
+APP_ENV=local
+APP_DEBUG=true
+APP_URL=http://localhost:8080
+
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=cyp_app
+DB_USERNAME=cyp
+DB_PASSWORD=secret
+
+SANCTUM_STATEFUL_DOMAINS=localhost:3000
+SESSION_DRIVER=cookie
+
+VITE_API_URL=/api
+ENV;
+
+        $this->generatedFiles['.env.production'] = <<<'ENV'
+APP_NAME=CYP_Application
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://your-domain.com
+
+DB_CONNECTION=pgsql
+DB_HOST=db
+DB_PORT=5432
+DB_DATABASE=cyp_app
+DB_USERNAME=cyp
+DB_PASSWORD=${DB_PASSWORD}
+
+SANCTUM_STATEFUL_DOMAINS=your-domain.com
+SESSION_DRIVER=cookie
+
+VITE_API_URL=/api
+ENV;
+    }
+}
