@@ -5,427 +5,582 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use Cypher\Compiler\Compiler;
 use Cypher\Compiler\Runtime\Runtime;
+use Cypher\Compiler\Project\AppProject;
+use Cypher\Compiler\Project\ProjectConfig;
+use Cypher\Compiler\CodeGen\DesignEngine\DesignEngine;
 use Cypher\Compiler\PackageManager\PackageManager;
 use Cypher\Compiler\PackageManager\PackageJson;
 use Cypher\Compiler\Registry\RegistryClient;
 use Cypher\Compiler\Registry\SecurityAuditor;
 use Cypher\Compiler\Registry\DeveloperPortal;
-use Cypher\Cloud\Deployment\DeploymentEngine;
-use Cypher\Cloud\Platform\CloudClient;
-use Cypher\Cloud\Platform\LocalDevServer;
-use Cypher\Cloud\ManagedServices\ManagedDatabase;
-use Cypher\Cloud\ManagedServices\ManagedVectorDB;
-use Cypher\Cloud\AgentCloud\AgentCloudRuntime;
-use Cypher\Cloud\Monitoring\MonitoringSystem;
-use Cypher\Cloud\Security\SecurityPlatform;
-use Cypher\Cloud\Billing\BillingPlatform;
-use Cypher\Cloud\Marketplace\MarketplacePlatform;
 
 const VERSION = '0.6.0';
 
 function writeln(string $line = ''): void { echo $line . PHP_EOL; }
-
 function error(string $msg): void { fwrite(STDERR, "Error: {$msg}" . PHP_EOL); }
-
-function format_error(string $msg): string
-{
-    return "\033[31m✗\033[0m {$msg}";
-}
-
-function format_success(string $msg): string
-{
-    return "\033[32m✓\033[0m {$msg}";
-}
+function format_error(string $msg): string { return "\033[31m✗\033[0m {$msg}"; }
+function format_success(string $msg): string { return "\033[32m✓\033[0m {$msg}"; }
+function format_info(string $msg): string { return "\033[36mℹ\033[0m {$msg}"; }
 
 function runCommand(string $name, string $description, string $usage): void
 {
-    printf("  \033[33m%-12s\033[0m %s\n", $name, $description);
-    printf("                  Usage: %s\n", $usage);
+    printf("  \033[33m%-16s\033[0m %s\n", $name, $description);
+    printf("                      Usage: %s\n", $usage);
+}
+
+function loadProject(?string $dir = null): AppProject
+{
+    $root = $dir ? rtrim(realpath($dir) ?: $dir, DIRECTORY_SEPARATOR) : getcwd();
+    if (!file_exists($root . DIRECTORY_SEPARATOR . 'cypher.json')) {
+        error("Not a CYP project directory (no cypher.json found). Run 'cyp new' first.");
+        exit(1);
+    }
+    return new AppProject($root);
+}
+
+function compileProject(AppProject $project, string $mode = 'full-stack'): ?\Cypher\Compiler\CompileResult
+{
+    writeln(format_info("Compiling project: {$project->getRootPath()}"));
+    writeln();
+
+    $compiler = new Compiler(['generation_mode' => $mode]);
+    $result = $compiler->compileProject($project);
+
+    if ($result->hasErrors()) {
+        writeln("Compilation failed with " . count($result->errors) . " error(s):");
+        writeln();
+        foreach ($result->errors as $err) {
+            writeln("  " . format_error($err));
+        }
+        return null;
+    }
+
+    return $result;
+}
+
+function writeGeneratedFiles(\Cypher\Compiler\CompileResult $result): int
+{
+    $outputDir = $result->getOutputDir();
+
+    if (!is_dir($outputDir)) {
+        mkdir($outputDir, 0777, true);
+    }
+
+    $count = 0;
+    foreach ($result->generatedFiles as $path => $content) {
+        if (str_starts_with($path, '_')) continue;
+        $fullPath = $outputDir . DIRECTORY_SEPARATOR . $path;
+        $dirName = dirname($fullPath);
+        if (!is_dir($dirName)) {
+            mkdir($dirName, 0777, true);
+        }
+        file_put_contents($fullPath, $content);
+        $count++;
+    }
+
+    return $count;
 }
 
 $command = $argv[1] ?? 'help';
 $args = array_slice($argv, 2);
 
 switch ($command) {
+    // ============================================================
+    //  PROJECT MANAGEMENT
+    // ============================================================
+
     case 'new':
         $name = $args[0] ?? 'my-app';
-        writeln("Creating new CYP project: {$name}");
         $dir = getcwd() . DIRECTORY_SEPARATOR . $name;
-        if (!mkdir($dir, 0777, true) && !is_dir($dir)) {
-            error("Could not create directory: {$dir}");
+
+        if (is_dir($dir)) {
+            error("Directory already exists: {$name}");
             exit(1);
         }
-        file_put_contents("{$dir}/app.cyp", "name = \"World\"\nsay \"Hello \${name}\"\n");
-        file_put_contents("{$dir}/cyp.json", json_encode([
-            'name' => $name,
-            'version' => '0.1.0',
-            'compiler' => 'cyp',
-        ], JSON_PRETTY_PRINT));
-        writeln(format_success("Project '{$name}' created"));
-        writeln("  cd {$name}");
-        writeln("  cyp run app.cyp");
+
+        writeln("Creating new CYP project: {$name}");
+        writeln();
+
+        AppProject::create($dir, $name);
+
+        // Create example files
+        file_put_contents("{$dir}/app.cyp",
+            "# {$name} — CYP Application\n# Edit this file and the .cyp files in pages/, models/, agents/, etc.\n\n" .
+            "name = \"{$name}\"\nsay \"Hello from {name}!\"\n"
+        );
+
+        file_put_contents("{$dir}/pages/home.cyp",
+            "page home\n" .
+            "    title = \"Welcome to {$name}\"\n" .
+            "    say \"<h1 class='text-3xl font-bold'>{title}</h1>\"\n" .
+            "    say \"<p class='mt-4 text-gray-600'>This page was generated from pages/home.cyp</p>\"\n" .
+            "end\n"
+        );
+
+        file_put_contents("{$dir}/models/user.cyp",
+            "model User\n" .
+            "    id: int\n" .
+            "    name: string\n" .
+            "    email: string unique\n" .
+            "    password: string\n" .
+            "end\n"
+        );
+
+        file_put_contents("{$dir}/api/users.cyp",
+            "api GET \"/api/users\"\n" .
+            "    return User::all()\n" .
+            "end\n"
+        );
+
+        writeln(format_success("Project '{$name}' created successfully!"));
+        writeln();
+        writeln("  Directory structure:");
+        foreach (array_keys(AppProject::STRUCTURE) as $entry) {
+            $icon = str_ends_with($entry, '/') ? '📁' : '📄';
+            $desc = AppProject::STRUCTURE[$entry];
+            writeln("    {$icon} {$entry}  — {$desc}");
+        }
+        writeln();
+        writeln("  Next steps:");
+        writeln("    cd {$name}");
+        writeln("    cyp run          — Run with hot-reload");
+        writeln("    cyp build        — Build full-stack application");
+        writeln("    cyp generate     — Scaffold models, pages, APIs, agents");
         break;
+
+    case 'init':
+        $dir = getcwd();
+        if (file_exists($dir . '/cypher.json')) {
+            error("Project already initialized in this directory");
+            exit(1);
+        }
+        $name = basename($dir);
+        AppProject::create($dir, $name);
+        writeln(format_success("Initialized CYP project in current directory"));
+        break;
+
+    // ============================================================
+    //  DEVELOPMENT
+    // ============================================================
 
     case 'run':
-        $target = $args[0] ?? 'app.cyp';
-        if (!file_exists($target)) {
-            error("File not found: {$target}");
-            exit(1);
-        }
+        $project = loadProject($args[0] ?? null);
 
-        writeln("Running: {$target}");
-        $runtime = new Runtime();
-        $result = $runtime->executeFile($target);
-
-        if ($result->hasErrors()) {
-            writeln();
-            foreach ($result->errors as $err) {
-                writeln(format_error($err));
-            }
-            exit(1);
-        }
-
+        writeln(format_info("Running CYP project..."));
         writeln();
-        echo $result->getOutput();
+
+        $manifest = $project->getManifest();
+        writeln("  Found " . count($manifest) . " .cyp file(s):");
+        foreach ($manifest as $entry) {
+            writeln("    📄 {$entry['path']}");
+        }
+        writeln();
+
+        $result = compileProject($project);
+        if ($result === null) exit(1);
+
+        $phpCode = $result->generatedFiles['app/App.php'] ?? '';
+        if (empty($phpCode)) {
+            // Find any executable PHP file
+            foreach ($result->generatedFiles as $path => $content) {
+                if (str_ends_with($path, '.php') && !str_contains($path, 'vendor/')) {
+                    $phpCode = $content;
+                    break;
+                }
+            }
+        }
+
+        if (!empty($phpCode)) {
+            $tmpFile = sys_get_temp_dir() . '/cyp_run_' . uniqid() . '.php';
+            file_put_contents($tmpFile, $phpCode);
+            writeln();
+            writeln(format_info("Output:"));
+            writeln();
+            passthru("php \"{$tmpFile}\"");
+            unlink($tmpFile);
+        } else {
+            writeln(format_success("Compilation successful — no runtime output"));
+        }
         break;
+
+    case 'watch':
+        $project = loadProject($args[0] ?? null);
+
+        writeln(format_info("Watching for changes in .cyp files..."));
+        writeln("  Press Ctrl+C to stop.");
+        writeln();
+
+        $lastTimestamps = [];
+        $manifest = $project->getManifest();
+        foreach ($manifest as $entry) {
+            $lastTimestamps[$entry['absolute']] = filemtime($entry['absolute']);
+        }
+
+        while (true) {
+            sleep(1);
+            $changed = false;
+            foreach ($manifest as $entry) {
+                $mtime = filemtime($entry['absolute']);
+                if ($mtime !== ($lastTimestamps[$entry['absolute']] ?? 0)) {
+                    $lastTimestamps[$entry['absolute']] = $mtime;
+                    $changed = true;
+                    writeln(format_info("Change detected: {$entry['path']}"));
+                }
+            }
+
+            if ($changed) {
+                $project = loadProject($args[0] ?? null);
+                $result = compileProject($project);
+                if ($result !== null) {
+                    $fileCount = writeGeneratedFiles($result);
+                    writeln(format_success("Rebuilt successfully — {$fileCount} files generated"));
+                }
+                writeln();
+                writeln(format_info("Watching for changes..."));
+            }
+        }
 
     case 'build':
-    case 'compile':
-        $target = $args[0] ?? 'app.cyp';
-        if (!file_exists($target)) {
-            error("File not found: {$target}");
-            exit(1);
-        }
+        $project = loadProject($args[0] ?? null);
 
-        writeln("Compiling: {$target}");
+        $manifest = $project->getManifest();
+        writeln("  Source files:");
+        foreach ($manifest as $entry) {
+            writeln("    📄 {$entry['path']}");
+        }
         writeln();
 
-        $compiler = new Compiler();
-        $result = $compiler->compileFile($target);
+        $result = compileProject($project);
+        if ($result === null) exit(1);
 
-        if ($result->hasErrors()) {
-            writeln("Compilation failed with " . count($result->errors) . " error(s):");
-            writeln();
-            foreach ($result->errors as $err) {
-                writeln("  " . format_error($err));
-            }
-            exit(1);
-        }
+        $originalCwd = getcwd();
+        chdir($project->getRootPath());
+        $fileCount = writeGeneratedFiles($result);
+        chdir($originalCwd);
 
         $outputDir = $result->getOutputDir();
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
-            error("Could not create output directory: {$outputDir}");
-            exit(1);
-        }
+        $fullOutputPath = $project->getRootPath() . DIRECTORY_SEPARATOR . ltrim($outputDir, DIRECTORY_SEPARATOR);
 
-        $fileCount = 0;
+        writeln();
+        writeln(format_success("Build complete!"));
+        writeln("  Source files:   {$result->getFileCount()} .cyp file(s)");
+        writeln("  Generated:      {$fileCount} file(s)");
+        writeln("  Output:         {$fullOutputPath}");
+        writeln();
+        writeln("  Output structure:");
+        $categories = ['backend/' => 0, 'frontend/' => 0, 'database/' => 0, 'docker/' => 0, 'routes/' => 0, 'config/' => 0];
         foreach ($result->generatedFiles as $path => $content) {
-            if (str_starts_with($path, '_')) continue;
-            $fullPath = $outputDir . DIRECTORY_SEPARATOR . $path;
-            $dirName = dirname($fullPath);
-            if (!is_dir($dirName)) {
-                mkdir($dirName, 0777, true);
+            foreach ($categories as $cat => &$count) {
+                if (str_starts_with($path, $cat)) { $count++; break; }
             }
-            file_put_contents($fullPath, $content);
-            $fileCount++;
         }
-
-        writeln(format_success("Build successful! Generated {$fileCount} files in '{$outputDir}/'"));
+        writeln("    🗄️  Backend:     {$categories['backend/']} files (Laravel)");
+        writeln("    🎨 Frontend:    {$categories['frontend/']} files (React + TypeScript + Tailwind)");
+        writeln("    🗃️  Database:    {$categories['database/']} files (PostgreSQL)");
+        writeln("    🐳 Docker:      {$categories['docker/']} files");
+        writeln("    🔌 API Routes:  {$categories['routes/']} files");
+        writeln("    ⚙️  Config:      {$categories['config/']} files");
+        writeln();
+        writeln("  To deploy:");
+        writeln("    cd {$fullOutputPath}");
+        writeln("    docker-compose up -d");
         break;
 
-    case 'test':
-        writeln("Running tests...");
-        $returnCode = 0;
-        passthru(__DIR__ . '/../vendor/bin/phpunit', $returnCode);
-        exit($returnCode);
+    case 'info':
+    case 'status':
+        $project = loadProject($args[0] ?? null);
+        $config = $project->getConfig();
+        $manifest = $project->getManifest();
+
+        writeln("CYP Project Info");
+        writeln(str_repeat('─', 50));
+        writeln("  Name:        {$config->get('name', 'N/A')}");
+        writeln("  Version:     {$config->get('version', 'N/A')}");
+        writeln("  Root:        {$project->getRootPath()}");
+        writeln("  Source:      {$config->get('source', '.')}");
+        writeln("  Build:       {$config->get('build.output', 'build')}");
+        writeln("  Backend:     {$config->get('targets.backend.framework', 'N/A')}");
+        writeln("  Frontend:    {$config->get('targets.frontend.framework', 'N/A')}");
+        writeln("  Database:    {$config->get('targets.database.engine', 'N/A')}");
+        writeln();
+        writeln("  .cyp Files:  " . count($manifest));
+        foreach ($manifest as $entry) {
+            $icon = match ($entry['category']) {
+                'pages' => '📄',
+                'models' => '🗃️',
+                'agents' => '🤖',
+                'api' => '🔌',
+                'components' => '🧩',
+                'workflows' => '⚡',
+                'services' => '⚙️',
+                default => '📄',
+            };
+            writeln("    {$icon} {$entry['path']}");
+        }
+        break;
 
     case 'doctor':
+        $dir = getcwd();
         writeln("CYP Environment Doctor");
-        writeln(str_repeat('-', 40));
-        writeln(format_success("PHP " . PHP_VERSION . " detected"));
-        writeln(format_success("CYP Compiler v" . VERSION));
-        if (file_exists(getcwd() . '/cyp.json')) {
-            writeln(format_success("Project configuration found"));
+        writeln(str_repeat('─', 50));
+
+        // Check PHP
+        if (version_compare(PHP_VERSION, '8.1', '>=')) {
+            writeln(format_success("PHP " . PHP_VERSION . " detected"));
         } else {
-            writeln("\033[33m⚠\033[0m No cyp.json found in current directory");
+            writeln(format_error("PHP 8.1+ required, found " . PHP_VERSION));
         }
-        writeln(str_repeat('-', 40));
-        writeln("All systems nominal");
+
+        // Check cypher.json
+        $configPath = $dir . '/cypher.json';
+        if (file_exists($configPath)) {
+            writeln(format_success("Project configuration found (cypher.json)"));
+        } else {
+            writeln(format_info("No cypher.json — not a CYP project directory"));
+        }
+
+        // Check .cyp files
+        $cypFiles = glob($dir . '/*.cyp') + glob($dir . '/pages/*.cyp') + glob($dir . '/models/*.cyp')
+            + glob($dir . '/agents/*.cyp') + glob($dir . '/api/*.cyp') + glob($dir . '/components/*.cyp')
+            + glob($dir . '/workflows/*.cyp');
+        writeln(format_success(count($cypFiles) . " .cyp file(s) found"));
+
+        // Check Composer
+        if (file_exists($dir . '/composer.json')) {
+            writeln(format_success("composer.json found"));
+        } else {
+            writeln(format_info("No composer.json — project dependencies not managed"));
+        }
+
+        writeln(str_repeat('─', 50));
+        writeln(format_success("All checks passed"));
         break;
 
-    case 'version':
-    case '--version':
-    case '-v':
-        writeln("CYP Language v" . VERSION);
-        break;
+    // ============================================================
+    //  SCAFFOLDING
+    // ============================================================
 
     case 'generate':
     case 'scaffold':
-        $target = $args[0] ?? 'app.cyp';
-        $outputDir = $args[1] ?? 'dist';
+        $project = loadProject($args[0] ?? null);
+        $type = $args[1] ?? '';
 
-        writeln("Generating full-stack application from: {$target}");
-        writeln();
-
-        if (!file_exists($target)) {
-            error("File not found: {$target}");
+        if (empty($type)) {
+            writeln("Usage: cyp generate [model|page|api|agent|component|workflow] <name> [fields...]");
+            writeln();
+            writeln("Examples:");
+            writeln("  cyp generate model Product name:string price:float");
+            writeln("  cyp generate page Dashboard");
+            writeln("  cyp generate api GET /api/products");
+            writeln("  cyp generate agent SupportAssistant gpt4");
+            writeln("  cyp generate component Card title:string");
+            writeln("  cyp generate workflow OrderFulfillment");
             exit(1);
         }
 
-        $compiler = new Compiler(['generation_mode' => 'full-stack']);
-        $result = $compiler->compileFile($target);
+        $name = $args[2] ?? '';
+        $fields = array_slice($args, 3);
 
-        if ($result->hasErrors()) {
-            writeln("Generation failed with " . count($result->errors) . " error(s):");
-            foreach ($result->errors as $err) {
-                writeln("  " . format_error($err));
-            }
-            exit(1);
-        }
+        $root = $project->getRootPath();
 
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true)) {
-            error("Could not create output directory: {$outputDir}");
-            exit(1);
-        }
-
-        $count = 0;
-        $categories = ['Backend' => 0, 'Frontend' => 0, 'Database' => 0, 'Auth' => 0, 'Deployment' => 0];
-        foreach ($result->generatedFiles as $path => $content) {
-            $fullPath = "{$outputDir}/{$path}";
-            $dirName = dirname($fullPath);
-            if (!is_dir($dirName)) {
-                mkdir($dirName, 0777, true);
-            }
-            file_put_contents($fullPath, $content);
-            $count++;
-            if (str_starts_with($path, 'app/')) $categories['Backend']++;
-            elseif (str_starts_with($path, 'frontend/')) $categories['Frontend']++;
-            elseif (str_starts_with($path, 'database/')) $categories['Database']++;
-            elseif (str_starts_with($path, 'routes/')) $categories['Backend']++;
-            elseif (str_starts_with($path, 'config/') || str_starts_with($path, 'docker/') || str_starts_with($path, '.env') || str_starts_with($path, '.github/')) $categories['Deployment']++;
-        }
-
-        writeln(format_success("Generated {$count} files in '{$outputDir}/'"));
-        writeln();
-        writeln("  Backend:     {$categories['Backend']} files");
-        writeln("  Frontend:    {$categories['Frontend']} files");
-        writeln("  Database:    {$categories['Database']} files");
-        writeln("  Auth:        Included");
-        writeln("  Deployment:  {$categories['Deployment']} files");
-        writeln();
-        writeln("Run the application:");
-        writeln("  cd {$outputDir}");
-        writeln("  docker-compose up -d");
+        match ($type) {
+            'model' => generate_model($root, $name, $fields),
+            'page' => generate_page($root, $name),
+            'api' => generate_api($root, $name, $fields[0] ?? 'GET'),
+            'agent' => generate_agent($root, $name, $fields[0] ?? 'gpt4'),
+            'component' => generate_component($root, $name, $fields),
+            'workflow' => generate_workflow($root, $name),
+            default => error("Unknown type: {$type}. Use: model, page, api, agent, component, workflow"),
+        };
         break;
 
     case 'make:model':
+        $project = loadProject();
         $name = $args[0] ?? '';
         if (empty($name)) { error("Model name required"); exit(1); }
-        $fields = array_slice($args, 1);
-        $code = "model {$name}\n";
-        if (empty($fields)) {
-            $code .= "    id: int\n    name: string\n    created_at: datetime\n";
-        } else {
-            foreach ($fields as $f) {
-                $parts = explode(':', $f);
-                $fieldName = $parts[0];
-                $fieldType = $parts[1] ?? 'string';
-                $code .= "    {$fieldName}: {$fieldType}\n";
-            }
-        }
-        $code .= "end\n";
-        $filename = strtolower($name) . '.cyp';
-        file_put_contents($filename, $code);
-        writeln(format_success("Model '{$name}' written to {$filename}"));
+        generate_model($project->getRootPath(), $name, array_slice($args, 1));
         break;
 
     case 'make:page':
+        $project = loadProject();
         $name = $args[0] ?? '';
         if (empty($name)) { error("Page name required"); exit(1); }
-        $code = "page {$name}\n    title = \"{$name} Page\"\n    say \"<h1>{title}</h1>\"\nend\n";
-        $filename = strtolower($name) . '.cyp';
-        file_put_contents($filename, $code);
-        writeln(format_success("Page '{$name}' written to {$filename}"));
+        generate_page($project->getRootPath(), $name);
         break;
 
     case 'make:api':
-        $path = $args[0] ?? '/api/endpoint';
-        $method = $args[1] ?? 'GET';
-        $code = "api {$method} \"{$path}\"\n    return ['status' => 'ok']\nend\n";
-        $filename = 'api_' . str_replace(['/', '{', '}'], '_', trim($path, '/')) . '.cyp';
-        file_put_contents($filename, $code);
-        writeln(format_success("API endpoint '{$method} {$path}' written to {$filename}"));
+        $project = loadProject();
+        $name = $args[0] ?? '';
+        if (empty($name)) { error("API path required"); exit(1); }
+        generate_api($project->getRootPath(), $name, $args[1] ?? 'GET');
+        break;
+
+    case 'make:agent':
+        $project = loadProject();
+        $name = $args[0] ?? '';
+        if (empty($name)) { error("Agent name required"); exit(1); }
+        generate_agent($project->getRootPath(), $name, $args[1] ?? 'gpt4');
         break;
 
     case 'make:component':
+        $project = loadProject();
         $name = $args[0] ?? '';
         if (empty($name)) { error("Component name required"); exit(1); }
-        $props = array_slice($args, 1);
-        $propDecl = !empty($props) ? '(' . implode(', ', $props) . ')' : '';
-        $code = "component {$name}{$propDecl}\n    say \"<div class='p-4'><h2>{$name}</h2></div>\"\nend\n";
-        $filename = strtolower($name) . '.cyp';
-        file_put_contents($filename, $code);
-        writeln(format_success("Component '{$name}' written to {$filename}"));
+        generate_component($project->getRootPath(), $name, array_slice($args, 1));
+        break;
+
+    // ============================================================
+    //  DEPLOYMENT
+    // ============================================================
+
+    case 'deploy':
+        writeln("Deploying CYP project...");
+        writeln();
+        $project = loadProject($args[0] ?? null);
+
+        $result = compileProject($project);
+        if ($result === null) exit(1);
+
+        $originalCwd = getcwd();
+        chdir($project->getRootPath());
+        $fileCount = writeGeneratedFiles($result);
+        chdir($originalCwd);
+
+        $outputDir = $result->getOutputDir();
+        $fullOutputPath = $project->getRootPath() . DIRECTORY_SEPARATOR . ltrim($outputDir, DIRECTORY_SEPARATOR);
+
+        writeln();
+        writeln(format_success("Deployment ready: {$fileCount} files generated"));
+        writeln("  Output: {$fullOutputPath}");
+        writeln();
+        writeln("  Deploy with Docker:");
+        writeln("    cd {$fullOutputPath}");
+        writeln("    docker-compose up -d --build");
+        writeln();
+        writeln("  Or deploy to Cypher Cloud:");
+        writeln("    cyp cloud:deploy");
         break;
 
     case 'deploy:docker':
-        writeln("Deploying with Docker...");
-        writeln();
-        if (!file_exists('docker-compose.yml')) {
-            writeln("No docker-compose.yml found. Run 'cyp generate' first.");
+        $project = loadProject($args[0] ?? null);
+        $result = compileProject($project);
+        if ($result === null) exit(1);
+        $originalCwd = getcwd();
+        chdir($project->getRootPath());
+        $fileCount = writeGeneratedFiles($result);
+        chdir($originalCwd);
+        $outputDir = $project->getRootPath() . DIRECTORY_SEPARATOR . $result->getOutputDir();
+        writeln(format_success("Generated {$fileCount} files"));
+        writeln("Starting Docker deployment...");
+        passthru("cd \"{$outputDir}\" && docker-compose up -d --build 2>&1", $ret);
+        if ($ret === 0) {
+            writeln(format_success("Docker deployment started"));
+        } else {
+            error("Docker deployment failed");
             exit(1);
         }
-        passthru('docker-compose up -d --build');
         break;
 
-    // === Package Management Commands ===
+    // ============================================================
+    //  PACKAGE MANAGEMENT
+    // ============================================================
 
     case 'install':
         $pm = new PackageManager();
         $pkgName = $args[0] ?? null;
         $version = $args[1] ?? null;
-
         try {
             if ($pkgName) {
                 writeln("Installing {$pkgName}...");
             } else {
                 writeln("Installing dependencies...");
             }
-
             $result = $pm->install($pkgName, $version);
-
             if (!$result['success']) {
-                foreach ($result['errors'] as $err) {
-                    writeln("  " . format_error($err));
-                }
+                foreach ($result['errors'] as $err) { writeln("  " . format_error($err)); }
                 exit(1);
             }
-
             writeln(format_success("Installed " . count($result['installed']) . " package(s)"));
-            foreach ($result['installed'] as $pkg) {
-                writeln("  - {$pkg}");
-            }
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
+            foreach ($result['installed'] as $pkg) { writeln("  - {$pkg}"); }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'update':
-        $pm = new PackageManager();
-        $pkgName = $args[0] ?? null;
-
         try {
-            if ($pkgName) {
-                writeln("Updating {$pkgName}...");
-            } else {
-                writeln("Updating all packages...");
-            }
-
-            $result = $pm->update($pkgName);
+            $pm = new PackageManager();
+            $result = $pm->update($args[0] ?? null);
             writeln(format_success("Update completed"));
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'remove':
         $pkgName = $args[0] ?? '';
         if (empty($pkgName)) { error("Package name required"); exit(1); }
-
         try {
             $pm = new PackageManager();
-            $result = $pm->remove($pkgName);
+            $pm->remove($pkgName);
             writeln(format_success("Removed {$pkgName}"));
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'publish':
-        writeln("Publishing package...");
-        writeln();
-
         $cwd = getcwd();
-        $pkgPath = $cwd . '/cyp.json';
-        if (!file_exists($pkgPath)) {
-            error("No cyp.json found. Run 'cyp init' or 'cyp new' first.");
+        if (!file_exists($cwd . '/cypher.json')) {
+            error("No cypher.json found. Run 'cyp init' or 'cyp new' first.");
             exit(1);
         }
-
-        $pkg = PackageJson::load($pkgPath);
+        $pkg = PackageJson::load($cwd . '/cypher.json');
         $errors = $pkg->validate();
         if (!empty($errors)) {
-            foreach ($errors as $err) {
-                writeln("  " . format_error($err));
-            }
+            foreach ($errors as $err) { writeln("  " . format_error($err)); }
             exit(1);
         }
-
-        $registry = new RegistryClient();
-        $result = $registry->publish($cwd, $pkg->toArray());
-        if (isset($result['error'])) {
-            error($result['error']);
-            exit(1);
-        }
-        writeln(format_success("Package published!"));
+        try {
+            $registry = new RegistryClient();
+            $result = $registry->publish($cwd, $pkg->toArray());
+            if (isset($result['error'])) { error($result['error']); exit(1); }
+            writeln(format_success("Package published!"));
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'search':
         $query = implode(' ', $args);
         if (empty($query)) { error("Search query required"); exit(1); }
-
-        $portal = new DeveloperPortal();
-        $results = $portal->searchPackages($query);
-
-        if (empty($results)) {
-            writeln("No results found for '{$query}'");
-            writeln("  Check the registry at https://registry.cyphercode.ai");
-            exit(0);
-        }
-
-        writeln("Search results for '{$query}':");
-        foreach ($results as $pkg) {
-            writeln("  {$pkg['name']}@{$pkg['version']} - {$pkg['description']}");
-        }
+        try {
+            $portal = new DeveloperPortal();
+            $results = $portal->searchPackages($query);
+            if (empty($results)) {
+                writeln("No results found for '{$query}'");
+                exit(0);
+            }
+            writeln("Search results for '{$query}':");
+            foreach ($results as $pkg) {
+                writeln("  {$pkg['name']}@{$pkg['version']} - {$pkg['description']}");
+            }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'login':
         $username = $args[0] ?? '';
-        if (empty($username)) {
-            writeln("Username: ");
-            $username = trim(fgets(STDIN));
-        }
-
+        if (empty($username)) { writeln("Username: "); $username = trim(fgets(STDIN)); }
         writeln("Password: ");
-        // Cross-platform password input (silent on Unix, visible but functional on Windows)
-        if (DIRECTORY_SEPARATOR === '/') {
-            system('stty -echo');
-            $password = trim(fgets(STDIN));
-            system('stty echo');
-        } else {
-            // On Windows, read without echo suppression (acceptable fallback)
-            $password = trim(fgets(STDIN));
-        }
+        if (DIRECTORY_SEPARATOR === '/') { system('stty -echo'); $password = trim(fgets(STDIN)); system('stty echo'); }
+        else { $password = trim(fgets(STDIN)); }
         writeln();
-
-        $registry = new RegistryClient();
-        $token = $registry->authenticate($username, $password);
-
-        if ($token) {
-            writeln(format_success("Logged in as {$username}"));
-        } else {
-            error("Login failed. Check your credentials.");
-            exit(1);
-        }
+        try {
+            $registry = new RegistryClient();
+            $token = $registry->authenticate($username, $password);
+            if ($token) { writeln(format_success("Logged in as {$username}")); }
+            else { error("Login failed"); exit(1); }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'logout':
-        $registry = new RegistryClient();
-        $registry->logout();
-        writeln(format_success("Logged out"));
+        try {
+            $registry = new RegistryClient();
+            $registry->logout();
+            writeln(format_success("Logged out"));
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
     case 'whoami':
@@ -439,162 +594,75 @@ switch ($command) {
 
     case 'audit':
         writeln("Running security audit...");
-        writeln();
-
-        $pm = new PackageManager();
-        $installed = $pm->getInstalled();
-
-        if (empty($installed)) {
-            writeln("No packages to audit.");
-            break;
-        }
-
-        $auditor = new SecurityAuditor();
-        $results = $auditor->audit($installed);
-
-        if (empty($results)) {
-            writeln(format_success("No vulnerabilities found in " . count($installed) . " package(s)"));
-        } else {
-            writeln($auditor->getSummary());
-            foreach ($results as $r) {
-                foreach ($r['vulnerabilities'] as $v) {
-                    writeln("  " . format_error("{$r['package']}@{$r['version']}: {$v['title']}"));
+        try {
+            $pm = new PackageManager();
+            $installed = $pm->getInstalled();
+            if (empty($installed)) { writeln("No packages to audit."); break; }
+            $auditor = new SecurityAuditor();
+            $results = $auditor->audit($installed);
+            if (empty($results)) {
+                writeln(format_success("No vulnerabilities found in " . count($installed) . " package(s)"));
+            } else {
+                foreach ($results as $r) {
+                    foreach ($r['vulnerabilities'] as $v) {
+                        writeln("  " . format_error("{$r['package']}@{$r['version']}: {$v['title']}"));
+                    }
                 }
             }
-        }
+        } catch (\Exception $e) { error($e->getMessage()); exit(1); }
         break;
 
-    // === Cypher Cloud Commands ===
+    // ============================================================
+    //  TESTING
+    // ============================================================
 
-    case 'deploy':
-        $target = $args[0] ?? getcwd();
-        writeln("Deploying project: {$target}");
-        try {
-            $engine = new DeploymentEngine();
-            $deployment = $engine->deploy($target, ['version' => $args[1] ?? date('Y.m.d.Hi')]);
-            writeln(format_success("Deployed v{$deployment->version}"));
-            writeln("  ID:      {$deployment->id}");
-            writeln("  Status:  {$deployment->status}");
-            writeln("  Region:  {$deployment->region}");
-            writeln("  Duration: " . round($deployment->duration) . "ms");
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
-        break;
+    case 'test':
+        writeln("Running compiler tests...");
+        $returnCode = 0;
+        passthru(__DIR__ . '/../vendor/bin/phpunit', $returnCode);
+        exit($returnCode);
 
-    case 'scale':
-        $deployId = $args[0] ?? '';
-        $replicas = (int)($args[1] ?? 1);
-        if (empty($deployId)) { error("Deployment ID required"); exit(1); }
-        try {
-            $engine = new DeploymentEngine();
-            $engine->scale($deployId, $replicas);
-            writeln(format_success("Scaled to {$replicas} replicas"));
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
-        break;
+    // ============================================================
+    //  VERSION & HELP
+    // ============================================================
 
-    case 'rollback':
-        $deployId = $args[0] ?? '';
-        if (empty($deployId)) { error("Deployment ID required"); exit(1); }
-        try {
-            $engine = new DeploymentEngine();
-            $rollback = $engine->rollback($deployId);
-            writeln(format_success("Rolled back deployment {$deployId}"));
-            writeln("  New deployment: {$rollback->id}");
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
-        break;
-
-    case 'monitor':
-        $mon = new MonitoringSystem();
-        $dashboard = $mon->getDashboard();
-        writeln("Cypher Cloud Monitoring Dashboard");
-        writeln(str_repeat('-', 40));
-        foreach ($dashboard['metrics'] as $name => $metric) {
-            writeln("  {$name}: " . ($metric['value'] ?? 'N/A') . " (count: {$metric['count']})");
-        }
-        writeln("  Active Alerts: {$dashboard['active_alerts']}");
-        writeln();
-        writeln("Recent Logs:");
-        foreach ($dashboard['recent_logs'] as $log) {
-            writeln("  [{$log['level']}] {$log['source']}: {$log['message']}");
-        }
-        break;
-
-    case 'logs':
-        $source = $args[0] ?? '';
-        $level = $args[1] ?? '';
-        try {
-            $mon = new MonitoringSystem();
-            $filters = [];
-            if ($source) $filters['source'] = $source;
-            if ($level) $filters['level'] = $level;
-            $logs = $mon->queryLogs($filters);
-            foreach ($logs as $log) {
-                writeln("[{$log['timestamp']}] [{$log['level']}] {$log['source']}: {$log['message']}");
-            }
-            if (empty($logs)) writeln("No logs found.");
-        } catch (\Exception $e) {
-            error($e->getMessage());
-            exit(1);
-        }
-        break;
-
-    case 'domains':
-        writeln("Domain management requires Cypher Cloud subscription.");
-        writeln("  Visit https://cyphercode.ai for more information.");
-        break;
-
-    case 'secrets':
-        $action = $args[0] ?? 'list';
-        $sec = new SecurityPlatform();
-        if ($action === 'list') {
-            $secrets = $sec->listSecrets();
-            if (empty($secrets)) { writeln("No secrets stored."); break; }
-            foreach ($secrets as $s) {
-                writeln("  {$s['name']} (v{$s['version']}, created: {$s['created_at']})");
-            }
-        } elseif ($action === 'set') {
-            $name = $args[1] ?? '';
-            $value = $args[2] ?? '';
-            if (empty($name) || empty($value)) { error("Usage: cyp secrets set <name> <value>"); exit(1); }
-            $sec->storeSecret($name, $value);
-            writeln(format_success("Secret '{$name}' stored"));
-        } elseif ($action === 'delete') {
-            $name = $args[1] ?? '';
-            if (empty($name)) { error("Usage: cyp secrets delete <name>"); exit(1); }
-            $sec->deleteSecret($name);
-            writeln(format_success("Secret '{$name}' deleted"));
-        } else {
-            writeln("Usage: cyp secrets <list|set|delete>");
-        }
-        break;
-
-    case 'cloud:init':
-        $server = new LocalDevServer();
-        $server->start();
-        writeln(format_success("Cypher Cloud local environment initialized"));
+    case 'version':
+    case '--version':
+    case '-v':
+        writeln("CYP Language v" . VERSION);
         break;
 
     case 'help':
     default:
-        writeln("CYP Programming Language v" . VERSION);
+        writeln("CYP — Cypher Programming Language v" . VERSION);
         writeln("AI-Native Full-Stack Application Language");
         writeln();
         writeln("Usage: cyp <command> [options]");
         writeln();
-        writeln("Commands:");
+        writeln("📦  Project Management:");
         runCommand("new", "Create a new CYP project", "cyp new <project-name>");
-        runCommand("run", "Execute a CYP file", "cyp run <file.cyp>");
-        runCommand("build", "Compile a CYP project", "cyp build <file.cyp>");
-        runCommand("generate", "Generate full-stack application", "cyp generate <file.cyp> [output-dir]");
-        runCommand("scaffold", "Alias for generate", "cyp scaffold <file.cyp>");
+        runCommand("init", "Initialize CYP in current directory", "cyp init");
+        runCommand("info", "Show project information", "cyp info");
+        runCommand("doctor", "Validate project environment", "cyp doctor");
+        writeln();
+        writeln("💻  Development:");
+        runCommand("run", "Run the CYP project", "cyp run");
+        runCommand("build", "Build full-stack application", "cyp build");
+        runCommand("watch", "Watch .cyp files and auto-rebuild", "cyp watch");
+        writeln();
+        writeln("🏗️  Scaffolding:");
+        runCommand("generate", "Generate scaffold (model/page/api/agent/component/workflow)", "cyp generate <type> <name>");
+        runCommand("make:model", "Generate a model .cyp file", "cyp make:model <name> [field:type...]");
+        runCommand("make:page", "Generate a page .cyp file", "cyp make:page <name>");
+        runCommand("make:api", "Generate an API .cyp file", "cyp make:api <path> [method]");
+        runCommand("make:agent", "Generate an AI agent .cyp file", "cyp make:agent <name> [model]");
+        runCommand("make:component", "Generate a component .cyp file", "cyp make:component <name> [props...]");
+        writeln();
+        writeln("🚀  Deployment:");
+        runCommand("deploy", "Build and prepare for deployment", "cyp deploy");
+        runCommand("deploy:docker", "Build and deploy with Docker", "cyp deploy:docker");
+        writeln();
+        writeln("📦  Package Management:");
         runCommand("install", "Install packages", "cyp install [package] [version]");
         runCommand("update", "Update packages", "cyp update [package]");
         runCommand("remove", "Remove a package", "cyp remove <package>");
@@ -605,24 +673,141 @@ switch ($command) {
         runCommand("whoami", "Show current user", "cyp whoami");
         runCommand("audit", "Security audit", "cyp audit");
         writeln();
-        writeln("Scaffolding:");
-        runCommand("make:model", "Generate a model stub", "cyp make:model <name> [field:type...]");
-        runCommand("make:page", "Generate a page stub", "cyp make:page <name>");
-        runCommand("make:api", "Generate an API stub", "cyp make:api <path> [method]");
-        runCommand("make:component", "Generate a component stub", "cyp make:component <name> [props...]");
-        writeln();
-        writeln("Infrastructure:");
-        runCommand("deploy", "Deploy a CYP project", "cyp deploy [project-dir] [version]");
-        runCommand("scale", "Scale a deployment", "cyp scale <deployment-id> <replicas>");
-        runCommand("rollback", "Rollback a deployment", "cyp rollback <deployment-id>");
-        runCommand("monitor", "Show monitoring dashboard", "cyp monitor");
-        runCommand("logs", "View application logs", "cyp logs [source] [level]");
-        runCommand("domains", "Manage custom domains", "cyp domains");
-        runCommand("secrets", "Manage secrets", "cyp secrets <list|set|delete>");
-        runCommand("cloud:init", "Init local cloud environment", "cyp cloud:init");
+        writeln("⚙️  Utilities:");
         runCommand("test", "Run compiler tests", "cyp test");
-        runCommand("doctor", "Validate environment", "cyp doctor");
         runCommand("version", "Show version", "cyp version");
         writeln();
         break;
+}
+
+// ============================================================
+//  SCAFFOLDING FUNCTIONS
+// ============================================================
+
+function generate_model(string $root, string $name, array $fields): void
+{
+    $filename = strtolower($name) . '.cyp';
+    $path = $root . '/models/' . $filename;
+
+    $code = "# {$name} model\n";
+    $code .= "# Generated by cyp generate model {$name}\n\n";
+    $code .= "model {$name}\n";
+    if (empty($fields)) {
+        $code .= "    id: int\n    name: string\n    email: string unique\n    created_at: datetime\n";
+    } else {
+        foreach ($fields as $f) {
+            $parts = explode(':', $f);
+            $fieldName = $parts[0];
+            $fieldType = $parts[1] ?? 'string';
+            $code .= "    {$fieldName}: {$fieldType}\n";
+        }
+    }
+    $code .= "end\n";
+
+    ensure_dir(dirname($path));
+    file_put_contents($path, $code);
+    writeln(format_success("Model '{$name}' written to models/{$filename}"));
+}
+
+function generate_page(string $root, string $name): void
+{
+    $filename = strtolower($name) . '.cyp';
+    $path = $root . '/pages/' . $filename;
+
+    $code = "# {$name} page\n";
+    $code .= "# Generated by cyp generate page {$name}\n\n";
+    $code .= "page {$name}\n";
+    $code .= "    title = \"{$name} Page\"\n";
+    $code .= "    say \"<h1 class='text-3xl font-bold'>{title}</h1>\"\n";
+    $code .= "    say \"<p class='mt-4 text-gray-600'>Welcome to the {$name} page</p>\"\n";
+    $code .= "end\n";
+
+    ensure_dir(dirname($path));
+    file_put_contents($path, $code);
+    writeln(format_success("Page '{$name}' written to pages/{$filename}"));
+}
+
+function generate_api(string $root, string $path, string $method): void
+{
+    $clean = trim(str_replace(['/', '{', '}', '-'], '_', ltrim($path, '/')));
+    $filename = $clean . '.cyp';
+    $filepath = $root . '/api/' . $filename;
+
+    $code = "# API endpoint: {$method} {$path}\n";
+    $code .= "# Generated by cyp generate api {$path} {$method}\n\n";
+    $code .= "api {$method} \"{$path}\"\n";
+    $code .= "    return ['status' => 'ok', 'message' => '{$method} {$path}']\n";
+    $code .= "end\n";
+
+    ensure_dir(dirname($filepath));
+    file_put_contents($filepath, $code);
+    writeln(format_success("API endpoint '{$method} {$path}' written to api/{$filename}"));
+}
+
+function generate_agent(string $root, string $name, string $model): void
+{
+    $filename = strtolower($name) . '.cyp';
+    $path = $root . '/agents/' . $filename;
+
+    $code = "# {$name} AI Agent\n";
+    $code .= "# Generated by cyp generate agent {$name} {$model}\n\n";
+    $code .= "agent {$name}: {$model}\n";
+    $code .= "    prompt \"You are a helpful {$name} assistant\"\n\n";
+    $code .= "    task process(input)\n";
+    $code .= "        response = ask(input)\n";
+    $code .= "        return response\n";
+    $code .= "    end\n";
+    $code .= "end\n";
+
+    ensure_dir(dirname($path));
+    file_put_contents($path, $code);
+    writeln(format_success("Agent '{$name}' written to agents/{$filename}"));
+}
+
+function generate_component(string $root, string $name, array $props): void
+{
+    $filename = strtolower($name) . '.cyp';
+    $path = $root . '/components/' . $filename;
+
+    $propDecl = !empty($props) ? '(' . implode(', ', $props) . ')' : '';
+    $code = "# {$name} UI Component\n";
+    $code .= "# Generated by cyp generate component {$name}\n\n";
+    $code .= "component {$name}{$propDecl}\n";
+    $code .= "    say \"<div class='p-6 bg-white dark:bg-gray-800 rounded-lg shadow'><h2 class='text-xl font-semibold'>{$name}</h2></div>\"\n";
+    $code .= "end\n";
+
+    ensure_dir(dirname($path));
+    file_put_contents($path, $code);
+    writeln(format_success("Component '{$name}' written to components/{$filename}"));
+}
+
+function generate_workflow(string $root, string $name): void
+{
+    $filename = strtolower($name) . '.cyp';
+    $path = $root . '/workflows/' . $filename;
+
+    $code = "# {$name} Workflow\n";
+    $code .= "# Generated by cyp generate workflow {$name}\n\n";
+    $code .= "workflow {$name}\n";
+    $code .= "    step \"initialize\"\n";
+    $code .= "        say \"Starting {$name} workflow\"\n";
+    $code .= "    end\n\n";
+    $code .= "    step \"process\"\n";
+    $code .= "        say \"Processing...\"\n";
+    $code .= "    end\n\n";
+    $code .= "    step \"complete\"\n";
+    $code .= "        say \"{$name} workflow complete\"\n";
+    $code .= "    end\n";
+    $code .= "end\n";
+
+    ensure_dir(dirname($path));
+    file_put_contents($path, $code);
+    writeln(format_success("Workflow '{$name}' written to workflows/{$filename}"));
+}
+
+function ensure_dir(string $dir): void
+{
+    if (!is_dir($dir)) {
+        mkdir($dir, 0777, true);
+    }
 }

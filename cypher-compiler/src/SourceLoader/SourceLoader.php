@@ -2,14 +2,33 @@
 
 namespace Cypher\Compiler\SourceLoader;
 
+use Cypher\Compiler\Project\AppProject;
+
 class SourceLoader
 {
     private array $loadedModules = [];
     private array $searchPaths = [];
+    private ?AppProject $project = null;
 
     public function __construct(array $searchPaths = [])
     {
         $this->searchPaths = array_merge($searchPaths, [getcwd()]);
+    }
+
+    public function loadProject(AppProject $project): array
+    {
+        $this->project = $project;
+        $this->loadedModules = [];
+
+        $manifest = $project->discover();
+        $sources = [];
+
+        foreach ($manifest as $entry) {
+            $source = $this->readFile($entry['absolute']);
+            $sources[$entry['path']] = $source;
+        }
+
+        return $sources;
     }
 
     public function load(string $path): LoadedSource
@@ -35,13 +54,18 @@ class SourceLoader
         $this->searchPaths[] = $path;
     }
 
+    public function getProject(): ?AppProject
+    {
+        return $this->project;
+    }
+
     private function readFile(string $path): LoadedSource
     {
         if (isset($this->loadedModules[$path])) {
             return $this->loadedModules[$path];
         }
 
-        $content = file_get_contents($path);
+        $content = @file_get_contents($path);
         if ($content === false) {
             throw new SourceLoaderException("Cannot read file: {$path}");
         }

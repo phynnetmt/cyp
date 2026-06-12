@@ -1,0 +1,23 @@
+# CYP Build Output
+build/
+
+# Dependencies
+vendor/
+node_modules/
+
+# Environment
+.env
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PHP
+.phpunit.result.cache

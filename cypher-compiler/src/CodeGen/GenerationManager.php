@@ -8,40 +8,40 @@ use Cypher\Compiler\CodeGen\Frontend\ReactGenerator;
 use Cypher\Compiler\CodeGen\Database\PostgresGenerator;
 use Cypher\Compiler\CodeGen\Auth\AuthGenerator;
 use Cypher\Compiler\CodeGen\Deployment\DeploymentGenerator;
+use Cypher\Compiler\Project\AppProject;
 
 class GenerationManager
 {
     private array $config;
     private array $generatedFiles = [];
+    private ?AppProject $project;
 
-    public function __construct(array $config = [])
+    public function __construct(array $config = [], ?AppProject $project = null)
     {
         $this->config = $config;
+        $this->project = $project;
     }
 
     public function generateAll(ModuleNode $ast): array
     {
         $this->generatedFiles = [];
 
-        // 1. Backend (Laravel)
-        $backend = new LaravelGenerator($this->config);
+        $backend = new LaravelGenerator($this->config, $this->project);
         $this->generatedFiles = array_merge($this->generatedFiles, $backend->generate($ast));
 
-        // 2. Database (PostgreSQL)
-        $database = new PostgresGenerator($this->config);
+        $database = new PostgresGenerator($this->config, $this->project);
         $this->generatedFiles = array_merge($this->generatedFiles, $database->generate($ast));
 
-        // 3. Frontend (React + TypeScript + Tailwind)
-        $frontend = new ReactGenerator($this->config);
+        $frontend = new ReactGenerator($this->config, $this->project);
         $this->generatedFiles = array_merge($this->generatedFiles, $frontend->generate($ast));
 
-        // 4. Authentication
-        $auth = new AuthGenerator($this->config);
+        $auth = new AuthGenerator($this->config, $this->project);
         $this->generatedFiles = array_merge($this->generatedFiles, $auth->generate($ast));
 
-        // 5. Deployment
-        $deployment = new DeploymentGenerator($this->config);
+        $deployment = new DeploymentGenerator($this->config, $this->project);
         $this->generatedFiles = array_merge($this->generatedFiles, $deployment->generate($ast));
+
+        $this->generateBuildManifest();
 
         return $this->generatedFiles;
     }
@@ -49,5 +49,22 @@ class GenerationManager
     public function getGeneratedFiles(): array
     {
         return $this->generatedFiles;
+    }
+
+    private function generateBuildManifest(): void
+    {
+        $projectName = $this->project?->getConfig()->get('name', 'cyp-project') ?? 'cyp-project';
+        $projectVersion = $this->project?->getConfig()->get('version', '0.1.0') ?? '0.1.0';
+
+        $manifest = [
+            'generated_by' => 'CYP Compiler v0.1.0',
+            'project' => $projectName,
+            'version' => $projectVersion,
+            'generated_at' => date('c'),
+            'file_count' => count($this->generatedFiles),
+            'warning' => 'THIS DIRECTORY IS AUTO-GENERATED. DO NOT EDIT GENERATED FILES. Edit .cyp source files instead.',
+        ];
+
+        $this->generatedFiles['.cyp-manifest.json'] = json_encode($manifest, JSON_PRETTY_PRINT) . "\n";
     }
 }
