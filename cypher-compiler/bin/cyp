@@ -8,6 +8,9 @@ use Cypher\Compiler\Runtime\Runtime;
 use Cypher\Compiler\Project\AppProject;
 use Cypher\Compiler\Project\ProjectConfig;
 use Cypher\Compiler\CodeGen\DesignEngine\DesignEngine;
+use Cypher\Compiler\SourceGenerator\SourceGenerator;
+use Cypher\Compiler\SourceGenerator\ApplicationInterpreter;
+use Cypher\Compiler\SourceGenerator\ReverseEngineer;
 use Cypher\Compiler\PackageManager\PackageManager;
 use Cypher\Compiler\PackageManager\PackageJson;
 use Cypher\Compiler\Registry\RegistryClient;
@@ -362,11 +365,51 @@ switch ($command) {
 
     case 'generate':
     case 'scaffold':
-        $project = loadProject($args[0] ?? null);
-        $type = $args[1] ?? '';
+        $type = $args[0] ?? '';
+        $name = $args[1] ?? '';
+        $fields = array_slice($args, 2);
+
+        if ($type === 'app' || $type === 'application') {
+            $appName = $name ?: 'my-app';
+            $description = implode(' ', $fields);
+
+            if (empty($description)) {
+                writeln("Usage: cyp generate app <name> <description>");
+                writeln();
+                writeln("Examples:");
+                writeln("  cyp generate app RealEstate \"Build a real estate platform with property search, PDF downloads, contact agents, and admin management.\"");
+                writeln("  cyp generate app ECommerce \"Build an e-commerce platform with products, cart, checkout, and payments.\"");
+                exit(1);
+            }
+
+            $spec = SourceGenerator::fromDescription($appName, $description);
+
+            $generator = new SourceGenerator(getcwd());
+            $files = $generator->generateFullApp($appName, $spec);
+
+            $projectDir = getcwd() . DIRECTORY_SEPARATOR . $appName;
+            if (!is_dir($projectDir)) {
+                AppProject::create($projectDir, $appName);
+            }
+
+            $written = $generator->writeToProject($files, new AppProject($projectDir));
+
+            writeln();
+            writeln(format_success("Application '{$appName}' generated from description!"));
+            writeln();
+            writeln("  Generated " . count($written) . " .cyp files:");
+            foreach ($written as $w) {
+                writeln("    📄 {$w}");
+            }
+            writeln();
+            writeln("  Next: cd {$appName} && cyp build");
+            break;
+        }
+
+        $project = loadProject();
 
         if (empty($type)) {
-            writeln("Usage: cyp generate [model|page|api|agent|component|workflow] <name> [fields...]");
+            writeln("Usage: cyp generate [model|page|api|agent|component|workflow|app] <name> [fields...]");
             writeln();
             writeln("Examples:");
             writeln("  cyp generate model Product name:string price:float");
@@ -375,11 +418,9 @@ switch ($command) {
             writeln("  cyp generate agent SupportAssistant gpt4");
             writeln("  cyp generate component Card title:string");
             writeln("  cyp generate workflow OrderFulfillment");
+            writeln("  cyp generate app RealEstate \"Description of the application\"");
             exit(1);
         }
-
-        $name = $args[2] ?? '';
-        $fields = array_slice($args, 3);
 
         $root = $project->getRootPath();
 
@@ -390,8 +431,97 @@ switch ($command) {
             'agent' => generate_agent($root, $name, $fields[0] ?? 'gpt4'),
             'component' => generate_component($root, $name, $fields),
             'workflow' => generate_workflow($root, $name),
-            default => error("Unknown type: {$type}. Use: model, page, api, agent, component, workflow"),
+            default => error("Unknown type: {$type}. Use: model, page, api, agent, component, workflow, app"),
         };
+        break;
+
+    case 'generate:app':
+        $appName = $args[0] ?? '';
+        $description = implode(' ', array_slice($args, 1));
+
+        if (empty($appName) || empty($description)) {
+            writeln("Usage: cyp generate:app <name> <description>");
+            writeln();
+            writeln("  Describe your application in natural language, and CYP will generate the .cyp architecture.");
+            writeln();
+            writeln("Example:");
+            writeln('  cyp generate:app RealEstate "Build a real estate platform with property search, contact agents, and admin management."');
+            exit(1);
+        }
+
+        $spec = SourceGenerator::fromDescription($appName, $description);
+        $generator = new SourceGenerator(getcwd());
+        $files = $generator->generateFullApp($appName, $spec);
+
+        $projectDir = getcwd() . DIRECTORY_SEPARATOR . $appName;
+        if (!is_dir($projectDir)) {
+            AppProject::create($projectDir, $appName);
+        }
+
+        $written = $generator->writeToProject($files, new AppProject($projectDir));
+
+        writeln();
+        writeln(format_success("Application '{$appName}' generated from description!"));
+        writeln("  Generated " . count($written) . " .cyp files across models, pages, APIs, agents, workflows");
+        writeln();
+        writeln("  Next steps:");
+        writeln("    cd {$appName}");
+        writeln("    cyp build  — Generate full-stack application");
+        writeln("    cyp run    — Run the application");
+        break;
+
+    case 'import':
+        $sourcePath = $args[0] ?? '';
+        if (empty($sourcePath)) {
+            writeln("Usage: cyp import <path-to-existing-project>");
+            writeln();
+            writeln("  Imports an existing project and generates .cyp files from it.");
+            writeln();
+            writeln("  Supported: Laravel, React projects");
+            writeln();
+            writeln("Example:");
+            writeln("  cyp import ../my-laravel-app");
+            exit(1);
+        }
+
+        $fullPath = realpath($sourcePath);
+        if (!$fullPath) {
+            error("Path not found: {$sourcePath}");
+            exit(1);
+        }
+
+        writeln("Importing project from: {$fullPath}");
+        writeln();
+
+        $reverseEngineer = new ReverseEngineer();
+        $files = $reverseEngineer->importDirectory($fullPath);
+
+        if (empty($files)) {
+            writeln(format_info("No recognizable project structure found at {$fullPath}"));
+            writeln("  Supported: Laravel (artisan, app/Models), React (package.json, src/)");
+            exit(0);
+        }
+
+        if (!file_exists(getcwd() . '/cypher.json')) {
+            AppProject::create(getcwd(), basename($fullPath));
+        }
+
+        $generator = new SourceGenerator(getcwd());
+        $written = $generator->writeToProject($files);
+
+        writeln(format_success("Import complete!"));
+        writeln();
+        writeln("  Detected:");
+        foreach ($reverseEngineer->getDetected() as $item) {
+            writeln("    ℹ️  {$item}");
+        }
+        writeln();
+        writeln("  Generated " . count($written) . " .cyp files:");
+        foreach ($written as $w) {
+            writeln("    📄 {$w}");
+        }
+        writeln();
+        writeln("  Next: Review the generated .cyp files and run 'cyp build'");
         break;
 
     case 'make:model':
@@ -650,13 +780,17 @@ switch ($command) {
         runCommand("build", "Build full-stack application", "cyp build");
         runCommand("watch", "Watch .cyp files and auto-rebuild", "cyp watch");
         writeln();
-        writeln("🏗️  Scaffolding:");
-        runCommand("generate", "Generate scaffold (model/page/api/agent/component/workflow)", "cyp generate <type> <name>");
+        writeln("🏗️  Scaffolding & Generation:");
+        runCommand("generate", "Generate scaffold (model/page/api/agent/component/workflow/app)", "cyp generate <type> <name>");
+        runCommand("generate:app", "Generate entire app from natural language description", "cyp generate:app <name> <description>");
         runCommand("make:model", "Generate a model .cyp file", "cyp make:model <name> [field:type...]");
         runCommand("make:page", "Generate a page .cyp file", "cyp make:page <name>");
         runCommand("make:api", "Generate an API .cyp file", "cyp make:api <path> [method]");
         runCommand("make:agent", "Generate an AI agent .cyp file", "cyp make:agent <name> [model]");
         runCommand("make:component", "Generate a component .cyp file", "cyp make:component <name> [props...]");
+        writeln();
+        writeln("🔄  Import:");
+        runCommand("import", "Import existing project into .cyp files", "cyp import <path>");
         writeln();
         writeln("🚀  Deployment:");
         runCommand("deploy", "Build and prepare for deployment", "cyp deploy");

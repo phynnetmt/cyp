@@ -737,9 +737,54 @@ You can expect:
 
 ---
 
+## Founder & Ownership
+
+### Founder
+
+**CYP (Cypher Programming Language)** was created by **Nero Christopher Nwachukwu** — Founder and Chief Architect.
+
+| Role | Entity |
+|------|--------|
+| **Founder & Chief Architect** | Nero Christopher Nwachukwu |
+| **Founding Organization** | Phynnet Marketing and Technology (Phynnet Tech) |
+| **Founding Company** | Cypher Code LTD |
+| **Ecosystem Brand** | Cypher Code AI |
+
+### Responsibilities
+
+As the language's original architect, the founder oversees:
+
+- **Language Architecture** — Core syntax, compiler design, and language semantics
+- **Ecosystem Strategy** — Open-source governance, community growth, and industry adoption
+- **AI Platform Direction** — AI-native capabilities, agent frameworks, and autonomous coding
+- **Technical Governance** — Standards, security, and long-term technical vision
+- **Community Evolution** — Transition to community-governed open-source over time
+
+### Ownership & Governance
+
+| Aspect | Detail |
+|--------|--------|
+| **Project** | CYP Programming Language |
+| **Ecosystem** | Cypher Code AI Ecosystem |
+| **Created By** | Nero Christopher Nwachukwu |
+| **Maintained By** | Cypher Code AI, Cypher Code LTD, and Future Community Contributors |
+| **Repository** | [github.com/phynnetmt/cyp](https://github.com/phynnetmt/cyp) |
+
+> **Legacy Statement:** The CYP ecosystem will always acknowledge its founder while remaining open to community contributions and future evolution. The project is designed to transition toward community-driven governance under the Cypher Foundation.
+
+### Credits
+
+- **Nero Christopher Nwachukwu** — Founder, Language Architect, Vision
+- **Phynnet Marketing and Technology (Phynnet Tech)** — Founding organization
+- **Cypher Code LTD** — Founding company and ecosystem steward
+- **Cypher Code AI** — Ecosystem brand and platform
+- **Open Source Contributors** — Future community members who will help shape CYP's evolution
+
+---
+
 ## License
 
-Copyright (c) 2026 Cypher Code AI. All rights reserved.
+Copyright (c) 2026 Cypher Code AI, Cypher Code LTD. All rights reserved.
 
 CYP is released under the **CYP Public License v1.0 (CYP-1.0)** — a permissive open-source license compatible with the MIT license.
 
@@ -751,6 +796,9 @@ The software is provided "as is", without warranty of any kind.
 
 <p align="center">
   <b>CYP — Cypher Programming Language</b><br>
+  <i>Created by Nero Christopher Nwachukwu</i><br>
+  <i>Phynnet Marketing and Technology · Cypher Code LTD · Cypher Code AI</i>
+  <br><br>
   <a href="https://github.com/phynnetmt/cyp">GitHub</a> ·
   <a href="https://cyphercode.ai">Website</a> ·
   <a href="https://docs.cyphercode.ai">Documentation</a> ·
