@@ -62,29 +62,33 @@ class Compiler
         $aggregatedAst = new $moduleClass($aggregatedStmts);
         $result->ast = $aggregatedAst;
 
-        try {
-            $analyzer = new SemanticAnalyzer();
-            $errors = $analyzer->analyze($aggregatedAst);
-            foreach ($errors as $err) {
-                $result->addError('Semantic', "[{$err['line']}:{$err['column']}] {$err['message']}");
-            }
-            if ($analyzer->hasErrors()) {
+        if (!($this->config['skip_semantic'] ?? false)) {
+            try {
+                $analyzer = new SemanticAnalyzer();
+                $errors = $analyzer->analyze($aggregatedAst);
+                foreach ($errors as $err) {
+                    $result->addError('Semantic', "[{$err['line']}:{$err['column']}] {$err['message']}");
+                }
+                if ($analyzer->hasErrors()) {
+                    return $result;
+                }
+            } catch (\Exception $e) {
+                $result->addError('Semantic', $e->getMessage());
                 return $result;
             }
-        } catch (\Exception $e) {
-            $result->addError('Semantic', $e->getMessage());
-            return $result;
         }
 
-        try {
-            $typeChecker = new TypeChecker();
-            $typeErrors = $typeChecker->check($aggregatedAst);
-            foreach ($typeErrors as $err) {
-                $result->addError('Type', "[{$err['line']}:{$err['column']}] {$err['message']}");
+        if (!($this->config['skip_semantic'] ?? false)) {
+            try {
+                $typeChecker = new TypeChecker();
+                $typeErrors = $typeChecker->check($aggregatedAst);
+                foreach ($typeErrors as $err) {
+                    $result->addError('Type', "[{$err['line']}:{$err['column']}] {$err['message']}");
+                }
+            } catch (\Exception $e) {
+                $result->addError('Type', $e->getMessage());
+                return $result;
             }
-        } catch (\Exception $e) {
-            $result->addError('Type', $e->getMessage());
-            return $result;
         }
 
         try {
@@ -150,28 +154,32 @@ class Compiler
             return $result;
         }
 
-        try {
-            $analyzer = new SemanticAnalyzer();
-            $errors = $analyzer->analyze($ast);
-            foreach ($errors as $err) {
-                $result->addError('Semantic', "[{$err['line']}:{$err['column']}] {$err['message']}");
-            }
-            if ($analyzer->hasErrors()) {
+        if (!($this->config['skip_semantic'] ?? false)) {
+            try {
+                $analyzer = new SemanticAnalyzer();
+                $errors = $analyzer->analyze($ast);
+                foreach ($errors as $err) {
+                    $result->addError('Semantic', "[{$err['line']}:{$err['column']}] {$err['message']}");
+                }
+                if ($analyzer->hasErrors()) {
+                    return $result;
+                }
+            } catch (\Exception $e) {
+                $result->addError('Semantic', $e->getMessage());
                 return $result;
             }
-        } catch (\Exception $e) {
-            $result->addError('Semantic', $e->getMessage());
-            return $result;
         }
 
-        try {
-            $typeChecker = new TypeChecker();
-            $typeErrors = $typeChecker->check($ast);
-            foreach ($typeErrors as $err) {
-                $result->addError('Type', "[{$err['line']}:{$err['column']}] {$err['message']}");
+        if (!($this->config['skip_semantic'] ?? false)) {
+            try {
+                $typeChecker = new TypeChecker();
+                $typeErrors = $typeChecker->check($ast);
+                foreach ($typeErrors as $err) {
+                    $result->addError('Type', "[{$err['line']}:{$err['column']}] {$err['message']}");
+                }
+            } catch (\Exception $e) {
+                $result->addError('Type', $e->getMessage());
             }
-        } catch (\Exception $e) {
-            $result->addError('Type', $e->getMessage());
         }
 
         try {

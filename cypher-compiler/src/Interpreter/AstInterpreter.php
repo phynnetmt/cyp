@@ -30,6 +30,23 @@ class AstInterpreter
     {
         $this->reset();
 
+        // Pre-scan: hoist all task/func declarations
+        foreach ($ast->statements as $stmt) {
+            if ($stmt instanceof TaskDeclStmt) {
+                $this->functions[$stmt->name] = [
+                    'type' => 'task',
+                    'params' => $stmt->params,
+                    'body' => $stmt->body,
+                ];
+            } elseif ($stmt instanceof FuncDeclStmt) {
+                $this->functions[$stmt->name] = [
+                    'type' => 'func',
+                    'params' => $stmt->params,
+                    'body' => $stmt->body,
+                ];
+            }
+        }
+
         try {
             $this->executeStatements($ast->statements);
             return new InterpreterResult(
@@ -105,6 +122,10 @@ class AstInterpreter
             $index = $this->evaluateExpression($stmt->target->index);
             if (is_array($target) && is_int($index)) {
                 $target[$index] = $value;
+                // Update the variable in scope if the target is an identifier
+                if ($stmt->target->target instanceof IdentifierExpr) {
+                    $this->variables[$stmt->target->target->name] = $target;
+                }
             }
         }
     }
@@ -131,7 +152,13 @@ class AstInterpreter
     {
         while ($this->evaluateExpression($stmt->condition)) {
             $this->checkSteps();
-            $this->executeStatements($stmt->body);
+            try {
+                $this->executeStatements($stmt->body);
+            } catch (LoopContinue) {
+                continue;
+            } catch (LoopBreak) {
+                break;
+            }
         }
     }
 
@@ -141,7 +168,13 @@ class AstInterpreter
         for ($i = 1; $i <= $count; $i++) {
             $this->checkSteps();
             $this->variables['i'] = $i;
-            $this->executeStatements($stmt->body);
+            try {
+                $this->executeStatements($stmt->body);
+            } catch (LoopContinue) {
+                continue;
+            } catch (LoopBreak) {
+                break;
+            }
         }
     }
 
@@ -152,7 +185,25 @@ class AstInterpreter
             foreach ($iterable as $item) {
                 $this->checkSteps();
                 $this->variables[$stmt->variable] = $item;
-                $this->executeStatements($stmt->body);
+                try {
+                    $this->executeStatements($stmt->body);
+                } catch (LoopContinue) {
+                    continue;
+                } catch (LoopBreak) {
+                    break;
+                }
+            }
+        } elseif (is_string($iterable)) {
+            for ($i = 0; $i < strlen($iterable); $i++) {
+                $this->checkSteps();
+                $this->variables[$stmt->variable] = $iterable[$i];
+                try {
+                    $this->executeStatements($stmt->body);
+                } catch (LoopContinue) {
+                    continue;
+                } catch (LoopBreak) {
+                    break;
+                }
             }
         }
     }
@@ -170,20 +221,25 @@ class AstInterpreter
 
     private function executeTaskDecl(TaskDeclStmt $stmt): void
     {
-        $this->functions[$stmt->name] = [
-            'type' => 'task',
-            'params' => $stmt->params,
-            'body' => $stmt->body,
-        ];
+        // Already hoisted — skip if present
+        if (!isset($this->functions[$stmt->name])) {
+            $this->functions[$stmt->name] = [
+                'type' => 'task',
+                'params' => $stmt->params,
+                'body' => $stmt->body,
+            ];
+        }
     }
 
     private function executeFuncDecl(FuncDeclStmt $stmt): void
     {
-        $this->functions[$stmt->name] = [
-            'type' => 'func',
-            'params' => $stmt->params,
-            'body' => $stmt->body,
-        ];
+        if (!isset($this->functions[$stmt->name])) {
+            $this->functions[$stmt->name] = [
+                'type' => 'func',
+                'params' => $stmt->params,
+                'body' => $stmt->body,
+            ];
+        }
     }
 
     private function executeTryCatch(TryCatchStmt $stmt): void
@@ -209,7 +265,9 @@ class AstInterpreter
         $this->checkSteps();
 
         return match ($expr::class) {
-            LiteralExpr::class => $this->interpolateString((string)$expr->value),
+            LiteralExpr::class => $expr->literalType === 'string'
+                ? $this->interpolateString($expr->value)
+                : $expr->value,
             IdentifierExpr::class => $this->variables[$expr->name] ?? null,
             BinaryExpr::class => $this->evaluateBinary($expr),
             UnaryExpr::class => $this->evaluateUnary($expr),
@@ -231,7 +289,7 @@ class AstInterpreter
         $right = $this->evaluateExpression($expr->right);
 
         return match ($expr->operator) {
-            '+' => $left + $right,
+            '+' => is_string($left) || is_string($right) ? $left . $right : $left + $right,
             '-' => $left - $right,
             '*' => $left * $right,
             '/' => $right != 0 ? $left / $right : null,
@@ -295,6 +353,18 @@ class AstInterpreter
             return null;
         }
 
+        // Loop control (used by self-hosting lexer)
+        if ($callee === 'continue') {
+            throw new LoopContinue();
+        }
+        if ($callee === 'break') {
+            throw new LoopBreak();
+        }
+        // 'label' is used for continue targets in the self-hosting lexer — no-op
+        if ($callee === 'label') {
+            return null;
+        }
+
         return $this->callUserFunction($callee, $args);
     }
 
@@ -313,6 +383,9 @@ class AstInterpreter
         $index = $this->evaluateExpression($expr->index);
 
         if (is_array($target) && is_int($index) && isset($target[$index])) {
+            return $target[$index];
+        }
+        if (is_string($target) && is_int($index) && $index >= 0 && $index < strlen($target)) {
             return $target[$index];
         }
         return null;
@@ -449,9 +522,13 @@ class AstInterpreter
             $this->variables[$param->name] = $args[$i] ?? null;
         }
 
-        foreach ($func['body'] as $stmt) {
-            if ($this->hasReturned) break;
-            $this->executeStatement($stmt);
+        try {
+            foreach ($func['body'] as $stmt) {
+                if ($this->hasReturned) break;
+                $this->executeStatement($stmt);
+            }
+        } catch (LoopContinue|LoopBreak) {
+            // Loop control doesn't propagate out of function calls
         }
 
         $result = $this->returnValue;
@@ -473,3 +550,5 @@ class AstInterpreter
 }
 
 class InterpreterException extends \RuntimeException {}
+class LoopContinue extends \RuntimeException {}
+class LoopBreak extends \RuntimeException {}

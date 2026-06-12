@@ -55,6 +55,20 @@ class Parser
 
         $token = $this->peek();
 
+        // Allow certain keywords to be used as variable names when followed by =
+        if (in_array($token->type, [
+            TokenType::KeywordFunc, TokenType::KeywordType, TokenType::KeywordRecord,
+            TokenType::KeywordEnum, TokenType::KeywordUnion, TokenType::KeywordNot,
+        ], true)) {
+            $savePos = $this->pos;
+            $this->pos++;
+            $isAssign = $this->check(TokenType::Equals);
+            $this->pos = $savePos;
+            if ($isAssign) {
+                return $this->parseExpressionStmt();
+            }
+        }
+
         return match ($token->type) {
             TokenType::KeywordVar => $this->parseVarDecl(),
             TokenType::KeywordLet => $this->parseLetDecl(),
@@ -545,7 +559,7 @@ class Parser
 
     private function parseExpressionStmt(): \Cypher\Compiler\AST\StmtNode
     {
-        if ($this->check(TokenType::Identifier) && !$this->isAtEnd()) {
+        if (($this->check(TokenType::Identifier) || $this->check(TokenType::KeywordFunc)) && !$this->isAtEnd()) {
             $savePos = $this->pos;
             $idToken = $this->peek();
 
@@ -562,7 +576,13 @@ class Parser
             }
         }
 
+        // Handle assignments to index expressions and property accesses
         $expr = $this->parseExpression();
+        if ($this->match(TokenType::Equals)) {
+            $value = $this->parseExpression();
+            $this->skipNewlines();
+            return new AssignStmt($expr->getLine(), $expr->getColumn(), $expr, $value);
+        }
         $this->skipNewlines();
         return new ExpressionStmt($expr->getLine(), $expr->getColumn(), $expr);
     }
@@ -764,7 +784,15 @@ class Parser
             while (!$this->check(TokenType::RBrace) && !$this->isAtEnd()) {
                 $this->skipNewlines();
                 if ($this->check(TokenType::RBrace)) break;
-                $key = $this->consume(TokenType::Identifier, 'Expected record key')->value;
+                if ($this->check(TokenType::Identifier)) {
+                    $key = $this->advance()->value;
+                } elseif (!$this->isAtEnd() && !in_array($this->peek()->type, [
+                    TokenType::RBrace, TokenType::Newline, TokenType::Comma, TokenType::EOF,
+                ], true)) {
+                    $key = $this->advance()->value;
+                } else {
+                    $key = $this->consume(TokenType::Identifier, 'Expected record key')->value;
+                }
                 $this->consume(TokenType::Colon, "Expected ':'");
                 $val = $this->parseExpression();
                 $fields[] = new FieldExpr($this->previous()->line, $this->previous()->column, $key, $val);
@@ -797,6 +825,21 @@ class Parser
             return $this->parseCallOrIdent();
         }
 
+        // Allow keywords to be used as identifiers in expression context
+        $keywordTypes = [
+            TokenType::KeywordFunc, TokenType::KeywordType, TokenType::KeywordRecord,
+            TokenType::KeywordEnum, TokenType::KeywordUnion, TokenType::KeywordNot,
+            TokenType::KeywordMatch, TokenType::KeywordNew, TokenType::KeywordThis,
+            TokenType::KeywordPublic, TokenType::KeywordPrivate, TokenType::KeywordProtected,
+            TokenType::KeywordStatic, TokenType::KeywordReadonly, TokenType::KeywordIntersect,
+            TokenType::KeywordLet,
+        ];
+        foreach ($keywordTypes as $kt) {
+            if ($this->match($kt)) {
+                return $this->parseCallOrIdent();
+            }
+        }
+
         throw new ParserException(
             "Unexpected token: {$this->peek()->type->value} ('{$this->peek()->value}')",
             $this->peek()->line, $this->peek()->column
@@ -812,7 +855,16 @@ class Parser
             $this->skipNewlines();
 
             if ($this->match(TokenType::Dot)) {
-                $prop = $this->consume(TokenType::Identifier, 'Expected property name')->value;
+                if ($this->check(TokenType::Identifier)) {
+                    $prop = $this->advance()->value;
+                } elseif (!$this->isAtEnd() && $this->peek()->type !== TokenType::Newline && !in_array($this->peek()->type, [
+                    TokenType::Equals, TokenType::LBrace, TokenType::RBrace, TokenType::LParen, TokenType::RParen,
+                    TokenType::EOF,
+                ], true)) {
+                    $prop = $this->advance()->value;
+                } else {
+                    $prop = $this->consume(TokenType::Identifier, 'Expected property name')->value;
+                }
                 $expr = new PropertyAccessExpr($expr->getLine(), $expr->getColumn(), $expr, $prop);
                 continue;
             }
@@ -822,7 +874,11 @@ class Parser
                     ? $expr->name
                     : $this->generateExpressionString($expr);
 
-                $method = $this->consume(TokenType::Identifier, 'Expected method name')->value;
+                if ($this->check(TokenType::Identifier)) {
+                    $method = $this->advance()->value;
+                } else {
+                    $method = $this->advance()->value;
+                }
 
                 if ($this->match(TokenType::LParen)) {
                     $args = [];
@@ -936,7 +992,7 @@ class Parser
 
     private function skipNewlines(): void
     {
-        while ($this->match(TokenType::Newline));
+        while ($this->match(TokenType::Newline) || $this->match(TokenType::Semicolon));
     }
 
     private function match(TokenType ...$types): bool
